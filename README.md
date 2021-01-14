@@ -42,8 +42,6 @@ Copy the config.yaml, run\_recount\_cluster.sh, cluster.json, collect_SRA_essent
 ```
 Make any required changes to the config.yaml and cluster.json file.
 
-collect_SRA_essentials.py
-
 Next, type `nohup sh run_recount_cluster.sh 1 projectA_list.txt &` (to run in background).
 
 ## Usage on a local machine:
