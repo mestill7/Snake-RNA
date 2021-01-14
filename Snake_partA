@@ -1,0 +1,57 @@
+import os
+import sys
+from os import listdir
+from os.path import isfile, join
+import re
+# from Bio import SeqIO
+# import gzip
+# from collections import Counter
+
+configfile: "config.yaml"
+myfastqpath = "fastq/"
+
+SAMPLES = [line.rstrip() for line in open(config["project_list"])]
+print(SAMPLES)
+
+myinput=expand('output/temp/{sample}_SRAdownload.txt', sample=SAMPLES)
+# myinput.append(expand('fastq/{sample}_1.fastq', sample=SAMPLES))
+
+rule all:
+    input:
+        myinput
+
+rule download_sra:
+    output:
+        "output/temp/{sample}_SRAdownload.txt"
+    log:
+        "output/logs/{sample}.SRA_download.log"
+    run:
+        shell("fasterq-dump -S -f -e 8 -t output/temp_dir -O fastq/ {wildcards.sample}")
+        shell("touch output/temp/{wildcards.sample}_SRAdownload.txt")
+
+# rule rename_singles:
+#     input:
+#         "output/temp/{sample}_SRAdownload.txt"
+#     output:
+#         "fastq/{sample}_1.fastq"
+#     log:
+#         "output/logs/{sample}.rename.log"
+#     run:
+#         if isfile("fastq/{wildcards.sample}.fastq"):
+#             shell("cp fastq/{wildcards.sample}.fastq {output}")
+
+
+            # print("Now renaming single-end {wildcards.sample}")
+
+# if isfile("fastq/{wildcards.sample}_1.fastq"):
+#     print("{wildcards.sample} is paired-end")
+# Add function to check the downloaded file structure and read counts
+
+
+
+# -rw-r----- 1 estilm01 shenl03a  11G Jan  6 15:18 SRR10816390_1.fastq
+# -rw-r----- 1 estilm01 shenl03a  11G Jan  6 15:18 SRR10816390_2.fastq
+# -rw-r----- 1 estilm01 shenl03a  11G Jan  6 15:27 SRR10816391_1.fastq
+# -rw-r----- 1 estilm01 shenl03a  11G Jan  6 15:27 SRR10816391_2.fastq
+# -rw-r----- 1 estilm01 shenl03a 5.7G Jan  6 15:13 SRR11173863.fastq
+# -rw-r----- 1 estilm01 shenl03a 5.9G Jan  6 15:12 SRR11173864.fastq

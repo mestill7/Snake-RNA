@@ -1,0 +1,12 @@
+# Required arguements
+project_list: "projectA_list.txt"
+
+index: "/user/hisat_genome/mm10/genome" # hisat2 index for mouse genome
+
+threads_for_alignment: 4 # how many threads should be used for genomic alignment
+
+gtf: "/user/hisat_genome/gencode.vM25.annotation.gtf"
+
+recount_path: "/user/Tools/Snake-RNA"
+
+multiqc_yaml: "/user/Tools/Snake-RNA/multiqc_config_template.yaml"

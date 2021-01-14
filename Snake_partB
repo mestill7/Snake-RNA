@@ -1,0 +1,229 @@
+# Snake2
+import os
+import sys
+import pandas as pd
+from os import listdir
+from os.path import isfile, join
+import re
+from Bio import SeqIO
+import gzip
+from collections import Counter
+
+configfile: "config.yaml"
+myfastqpath = "fastq/"
+SRA = pd.read_csv("output/SRA_full_result.csv")
+SRA_ispair=dict(zip(SRA.iloc[:,0],SRA["PE"]=="pair"))
+# print(SRA_ispair)
+
+SAMPLES = [line.rstrip() for line in open("output/SRA_includefiles.txt")]
+
+myout = []
+myout.append("output/multiqc_report.html")
+myout.append(
+    expand('output/bw/{sample}.sorted.rmdup.chr.bw', 
+        sample=SAMPLES))
+
+rule all:
+    input:
+        myout
+
+rule fake_pair:
+    output:
+        "fastq/{sample}_2.fastq"
+    log:
+        "output/logs/{sample}.fakelog.log"
+    params:
+        pe_status = lambda wildcards: SRA_ispair["{}".format(wildcards.sample)]
+    run:
+        print(list({params.pe_status})[0])
+        if list({params.pe_status})[0] is False:
+            shell("touch fastq/{wildcards.sample}_2.fastq")
+
+rule gzip_fastq:
+    input: 
+        pair1="fastq/{sample}_1.fastq",
+        pair2="fastq/{sample}_2.fastq"
+    output:
+        pair1="fastq/{sample}_1.fastq.gz",
+        pair2="fastq/{sample}_2.fastq.gz"
+    params:
+        pe_status = lambda wildcards: SRA_ispair["{}".format(wildcards.sample)]
+    run:
+        if list({params.pe_status})[0] is True:
+            shell("gzip {input.pair1}")
+            shell("gzip {input.pair2}")
+        else:
+            shell("gzip {input.pair1}")
+            shell("touch {output.pair2}")
+            shell("rm {input.pair2}")
+
+rule trim_fastq_fastqc:
+    input:
+        pair1="fastq/{sample}_1.fastq.gz",
+        pair2="fastq/{sample}_2.fastq.gz"
+    output:
+        trimmed_pair1 = temp(
+            "output/trim_fastq/{sample}_1_trimmed.fq.gz"),
+        trimmed_pair2 = temp(
+            "output/trim_fastq/{sample}_2_trimmed.fq.gz"),
+        fastqc_zipfile1 = "output/fastqc/{sample}_1_fastqc.zip",
+        fastqc_zipfile2 = "output/fastqc/{sample}_2_fastqc.zip"
+    log:
+        "output/logs/{sample}.trim_adapters.log"
+    params:
+        pe_status = lambda wildcards: SRA_ispair["{}".format(wildcards.sample)]
+    run:
+        if list({params.pe_status})[0] is True:
+            # mv files to R1 and R2 ending in temporary directory
+            shell("mkdir -p output/temp_dir")
+            shell("trim_galore \
+                --gzip fastq/{wildcards.sample}_1.fastq.gz \
+                fastq/{wildcards.sample}_2.fastq.gz --paired \
+                -o ./output/trim_fastq")
+            shell("fastqc fastq/{wildcards.sample}_1.fastq.gz \
+                fastq/{wildcards.sample}_2.fastq.gz \
+                -o ./output/fastqc")
+            shell("mv output/trim_fastq/{wildcards.sample}_1_val_1.fq.gz \
+                output/trim_fastq/{wildcards.sample}_1_trimmed.fq.gz"),
+            shell("mv output/trim_fastq/{wildcards.sample}_2_val_2.fq.gz \
+                output/trim_fastq/{wildcards.sample}_2_trimmed.fq.gz")
+        else:
+            shell("trim_galore \
+                --gzip fastq/{wildcards.sample}_1.fastq.gz \
+                -o ./output/trim_fastq --basename {wildcards.sample}")
+            shell("mv output/trim_fastq/{wildcards.sample}_trimmed.fq.gz \
+                output/trim_fastq/{wildcards.sample}_1_val_1.fq.gz")
+            shell("fastqc fastq/{wildcards.sample}_1.fastq.gz \
+                -o ./output/fastqc")
+            shell("touch {output.trimmed_pair2}")
+            shell("touch {output.fastqc_zipfile2}")
+            shell("mv output/trim_fastq/{wildcards.sample}_1_val_1.fq.gz \
+                output/trim_fastq/{wildcards.sample}_1_trimmed.fq.gz"),
+
+
+rule fastq_to_bam:
+    input:
+        trimmed_pair1 = "output/trim_fastq/{sample}_1_trimmed.fq.gz",
+        trimmed_pair2 = "output/trim_fastq/{sample}_2_trimmed.fq.gz"
+    params:
+        index = config["index"],
+        pe_status = lambda wildcards: SRA_ispair["{}".format(wildcards.sample)]   
+    output:
+        bam = "output/bam/{sample}.bam",
+        bambai = "output/bam/{sample}.bam.bai"
+    threads: config["threads_for_alignment"]
+    log:
+        "output/logs/{sample}.alignment.log"
+    run:
+        if list({params.pe_status})[0] is True:
+            shell("hisat2 -p {threads} -x {params.index} \
+                -1 {input.trimmed_pair1} -2 {input.trimmed_pair2} \
+                -S output/bam/{wildcards.sample}.sam 2> {log}")                   
+        else:
+            shell("hisat2 -p {threads} -x {params.index} \
+                -U {input.trimmed_pair1} \
+                -S output/bam/{wildcards.sample}.sam 2> {log}")
+        shell("samtools sort output/bam/{wildcards.sample}.sam | \
+            samtools view -bS - > {output.bam}"),
+        shell("samtools index {output.bam}")
+        shell("rm output/bam/{wildcards.sample}.sam")
+        # shell("rm {input.trimmed_pair1} {input.trimmed_pair2}")
+
+# Remove duplicate reads from paired-end RNA-seq samples
+rule sortedbam_to_rmdup:
+    input:
+        "output/bam/{sample}.bam"
+    output:
+        "output/bam/{sample}.sorted.rmdup.bam"
+    log:
+        "output/logs/{sample}.rmdup.log"
+    run:
+        shell("samtools rmdup {input} {output} 2> {log}")
+        # shell("rm -f {input} {input}.bai")
+
+rule rmdup_to_chrbam:
+    input:
+        dup_removed = "output/bam/{sample}.sorted.rmdup.bam"
+    output:
+        chrbam = "output/bam/{sample}.sorted.rmdup.chr.bam",
+        chrbambai = "output/bam/{sample}.sorted.rmdup.chr.bam.bai"
+    log:
+        "output/logs/{sample}.chrbam.log"
+    run:
+        shell("samtools view -H {input.dup_removed} | \
+            sed -e \"s/SN:\([0-9XY]\)/SN:chr\\1/\" -e \"s/SN:MT/SN:chrM/\" | \
+            samtools reheader - {input.dup_removed} > {output.chrbam}")
+        shell("samtools index {output.chrbam}")
+
+# Create bigwig from bam file (main chromosomes only)
+rule chrbam_to_bw:
+    input:
+        chrbam = "output/bam/{sample}.sorted.rmdup.chr.bam",
+        chrbambai = "output/bam/{sample}.sorted.rmdup.chr.bam.bai"
+    output:
+        bw_file = "output/bw/{sample}.sorted.rmdup.chr.bw"
+    log:
+        "output/logs/{sample}.bw.log"
+    run:
+        shell("bamCoverage -b {input.chrbam} -o {output.bw_file} --binSize 10 \
+            --normalizeUsing RPKM")
+
+
+# Create counts files for RNA-seq
+rule sortedbam_to_counts:
+    input:
+        "output/bam/{sample}.sorted.rmdup.bam"
+    output:
+        gene_counts = "output/counts/{sample}.gene.counts.txt",
+        exon_counts = "output/counts/{sample}.exon.counts.txt",
+        junction_counts = "output/counts/{sample}.junction.counts"       
+    params:
+        gtf = config["gtf"],
+        pe_status = lambda wildcards: SRA_ispair["{}".format(wildcards.sample)]
+    log:
+        "output/logs/{sample}.feature_counts.log"
+    run:
+        if list({params.pe_status})[0] is True:
+            shell("featureCounts -p -T 4 -O --fraction -t gene \
+                -a {params.gtf} -o {output.gene_counts} {input} 2> {log}")
+            shell("featureCounts -T 4 -p -O -g exon_id  \
+                -a {params.gtf} -o {output.exon_counts} {input} 2> {log}")
+            shell("featureCounts -J -T 4 -p -t gene  \
+                -a {params.gtf} -o {output.junction_counts} {input} 2> {log}")
+        else:
+            shell("featureCounts -O -T 4 --fraction -t gene \
+                -a {params.gtf} -o {output.gene_counts} {input} 2> {log}")
+            shell("featureCounts -T 4 -O -g exon_id  \
+                -a {params.gtf} -o {output.exon_counts} {input} 2> {log}")
+            shell("featureCounts -J -T 4 -t gene  \
+                -a {params.gtf} -o {output.junction_counts} {input} 2> {log}")
+
+# Compile counts for RNA-seq
+rule counts_matrix:
+    input:
+        gene_counts = expand("output/counts/{sample}.gene.counts.txt", 
+                        sample=SAMPLES),
+        exon_counts = expand("output/counts/{sample}.exon.counts.txt", 
+                        sample=SAMPLES)
+    output:
+        gene_matrix = "output/counts_gene_matrix.txt",
+        exon_matrix = "output/counts_exon_matrix.txt"
+    log:
+        "output/logs/counts_matrix.log"
+    params:
+        ngs_path = config["ngs_path"]
+    run:
+        shell("python {params.ngs_path}/ngs_helper/generate_counts_matrix.py {output.gene_matrix} {input.gene_counts}")
+        shell("python {params.ngs_path}/ngs_helper/generate_counts_matrix.py {output.exon_matrix} {input.exon_counts}")
+
+# Create multiqc report for RNA-seq
+rule run_multiqc:
+    input:
+        gene_matrix = "output/counts_gene_matrix.txt",
+        exon_matrix = "output/counts_exon_matrix.txt"
+    output:
+        multiqc_report = "output/multiqc_report.html"
+    params:
+        multiqc_config = config["multiqc_yaml"]
+    shell:
+        "multiqc . -f --config {params.multiqc_config}"
